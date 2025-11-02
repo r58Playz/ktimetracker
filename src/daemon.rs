@@ -1,14 +1,20 @@
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use log::{debug, error, info, trace};
+use std::os::{linux::net::SocketAddrExt, unix::net::SocketAddr};
 use std::sync::Arc;
 use tokio::signal;
+use tokio::task::JoinHandle;
 
 use crate::{
-    db::Database, kactivities::KActivitiesConnection, systemd::SystemdConnection,
+    Action, db::Database, kactivities::KActivitiesConnection, systemd::SystemdConnection,
     wayland::WaylandConnection,
 };
+use serde_json;
 
 pub enum DaemonEvent {
     KdeActivityChanged { activity: String },
@@ -21,6 +27,118 @@ pub struct Daemon {
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
     event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
     idle_duration: u32,
+}
+
+fn parse_datetime(s: String) -> anyhow::Result<DateTime<Local>> {
+    // Try different formats
+    if let Ok(dt) = DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+        return Ok(dt.with_timezone(&Local));
+    }
+    if let Ok(dt) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+        return Ok(Local
+            .from_local_datetime(&dt.and_hms_opt(0, 0, 0).unwrap())
+            .unwrap());
+    }
+    if let Ok(dt) = NaiveDate::parse_from_str(&s, "%d/%m/%Y") {
+        return Ok(Local
+            .from_local_datetime(&dt.and_hms_opt(0, 0, 0).unwrap())
+            .unwrap());
+    }
+    Err(anyhow::anyhow!("Invalid date format"))
+}
+
+async fn handle_unix_client(
+    stream: &mut tokio::net::UnixStream,
+    db: Arc<Database>,
+    kactivities_conn: KActivitiesConnection,
+) -> Result<()> {
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await?;
+    let action: Action = serde_json::from_slice(&buf).context("Failed to deserialize action")?;
+
+    match action {
+        Action::Summary {
+            start_time,
+            end_time,
+        } => {
+            let start = start_time
+                .map(|s| parse_datetime(s))
+                .transpose()
+                .context("Failed to parse start_time")?;
+            let end = end_time
+                .map(|s| parse_datetime(s))
+                .transpose()
+                .context("Failed to parse end_time")?;
+
+            let summary = db.get_summary(start, end).await?;
+
+            let mut max_activity_len = "Activity".len();
+            let mut max_duration_len = "Duration".len();
+
+            let mut resolved_summary = Vec::new();
+            for (activity_uuid, duration) in summary {
+                let activity_info = kactivities_conn
+                    .query_activity_info(activity_uuid.clone())
+                    .await?;
+                let activity_name = if activity_info.name.is_empty() {
+                    activity_uuid
+                } else {
+                    activity_info.name
+                };
+                resolved_summary.push((activity_name, duration));
+            }
+
+            for (activity, duration) in &resolved_summary {
+                max_activity_len = max_activity_len.max(activity.len());
+                max_duration_len = max_duration_len.max(duration.len());
+            }
+
+            let separator = format!("{:->max_activity_len$}-+{:->max_duration_len$}\n", "", "");
+
+            stream.write_all(separator.as_bytes()).await?;
+            stream
+                .write_all(
+                    format!(
+                        "{:<max_activity_len$} | {:<max_duration_len$}\n",
+                        "Activity", "Duration"
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            stream.write_all(separator.as_bytes()).await?;
+
+            for (activity, duration) in resolved_summary {
+                stream
+                    .write_all(
+                        format!(
+                            "{:<max_activity_len$} | {:<max_duration_len$}\n",
+                            activity, duration
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            stream.write_all(separator.as_bytes()).await?;
+        }
+        Action::Current => {
+            let current_uuid = db.get_current_activity().await?;
+            let activity_info = kactivities_conn
+                .query_activity_info(current_uuid.clone())
+                .await?;
+            let (name, description) = if activity_info.name.is_empty() {
+                (current_uuid, String::new())
+            } else {
+                (activity_info.name, activity_info.description)
+            };
+            stream
+                .write_all(
+                    format!("Current Activity: {}\nDescription: {}\n", name, description)
+                        .as_bytes(),
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 impl Daemon {
@@ -70,6 +188,27 @@ impl Daemon {
                 .daemon(),
         );
 
+        let listener =
+            UnixListener::bind(&SocketAddr::from_abstract_name("dev.r58playz.ktimetracker")?)?;
+        let mut unix_socket_handle: JoinHandle<Result<()>> = tokio::spawn({
+            let db = db.clone();
+            let kactivities_conn = kactivities_conn.clone();
+            async move {
+                loop {
+                    let (mut stream, _addr) = listener.accept().await?;
+                    let db = db.clone();
+                    let kactivities_conn = kactivities_conn.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_unix_client(&mut stream, db, kactivities_conn).await
+                        {
+                            error!("error handling unix client: {e}");
+                            let _ = stream.write_all(format!("Error: {e}\n").as_bytes()).await;
+                        }
+                    });
+                }
+            }
+        });
+
         loop {
             tokio::select! {
                 res = &mut signal_handle => {
@@ -82,6 +221,10 @@ impl Daemon {
                 },
                 res = &mut systemd_handle => {
                     error!("systemd task exited with: {res:?}");
+                    break;
+                },
+                res = &mut unix_socket_handle => {
+                    error!("unix socket task exited with: {res:?}");
                     break;
                 },
                 event = self.event_rx.recv() => {

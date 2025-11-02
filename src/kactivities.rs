@@ -39,6 +39,13 @@ pub struct ActivityInfo {
 pub struct KActivitiesConnection {
     actor: mpsc::UnboundedSender<KActivitiesMessage>,
 }
+
+impl Clone for KActivitiesConnection {
+    fn clone(&self) -> Self {
+        Self { actor: self.actor.clone() }
+    }
+}
+
 impl KActivitiesConnection {
     pub async fn new(daemon: mpsc::UnboundedSender<DaemonEvent>) -> Result<Self> {
         let conn = Connection::session()

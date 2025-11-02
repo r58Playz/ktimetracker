@@ -1,21 +1,30 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use std::os::{linux::net::SocketAddrExt, unix::net::SocketAddr};
 use log::LevelFilter;
+use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
 mod daemon;
-mod wayland;
+mod db;
 mod kactivities;
 mod systemd;
-mod db;
+mod wayland;
 
-#[derive(Debug, Parser)]
-/// KDE Activities and Wayland idle protocol based time tracking tool
-struct Args {
-    #[command(subcommand)]
-    command: Cli,
+#[derive(Parser, Debug, Serialize, Deserialize)]
+pub enum Action {
+    /// Print summary of time spent
+    Summary {
+        start_time: Option<String>,
+        end_time: Option<String>,
+    },
+    /// Print current session
+    Current,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Parser)]
 enum Cli {
+    #[clap(flatten)]
+    Action(Action),
     /// Run daemon
     Daemon {
         #[arg(long, default_value = "~/.local/share/ktimetracker.db3")]
@@ -32,12 +41,28 @@ async fn main() -> anyhow::Result<()> {
         .parse_default_env()
         .init();
 
-    let args = Args::parse();
+    let args = Cli::parse();
 
-    match args.command {
-        Cli::Daemon { database_path, idle_timeout } => {
+    match args {
+        Cli::Daemon {
+            database_path,
+            idle_timeout,
+        } => {
             let daemon = daemon::Daemon::new(idle_timeout);
             daemon.run(&database_path).await?;
+            Ok(())
+        }
+        Cli::Action(action) => {
+            let mut stream = tokio::net::UnixStream::connect(&SocketAddr::from_abstract_name(
+                "dev.r58playz.ktimetracker",
+            )?)
+            .await?;
+            let action_str = serde_json::to_string(&action)?;
+            stream.write_all(action_str.as_bytes()).await?;
+
+            let mut stdout = tokio::io::stdout();
+            tokio::io::copy(&mut stream, &mut stdout).await?;
+
             Ok(())
         }
     }

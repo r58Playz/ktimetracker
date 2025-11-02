@@ -1,11 +1,7 @@
-use std::{
-    sync::mpsc::Sender,
-    time::Duration
-};
+use std::{sync::mpsc::Sender, time::Duration};
 
 use anyhow::{Context, Result};
 use dbus::{Message, blocking::Connection};
-use log::info;
 
 use crate::daemon::DaemonEvent;
 
@@ -14,40 +10,39 @@ const PATH: &str = "/ActivityManager/Activities";
 const INTERFACE: &str = "org.kde.ActivityManager.Activities";
 
 #[derive(Debug)]
-pub struct OrgKdeActivityManagerActivitiesActivityChanged {
+pub struct OrgKdeActivityManagerActivitiesCurrentActivityChanged {
     pub activity: String,
 }
 
-impl dbus::arg::AppendAll for OrgKdeActivityManagerActivitiesActivityChanged {
+impl dbus::arg::AppendAll for OrgKdeActivityManagerActivitiesCurrentActivityChanged {
     fn append(&self, i: &mut dbus::arg::IterAppend) {
         dbus::arg::RefArg::append(&self.activity, i);
     }
 }
 
-impl dbus::arg::ReadAll for OrgKdeActivityManagerActivitiesActivityChanged {
+impl dbus::arg::ReadAll for OrgKdeActivityManagerActivitiesCurrentActivityChanged {
     fn read(i: &mut dbus::arg::Iter) -> Result<Self, dbus::arg::TypeMismatchError> {
-        Ok(OrgKdeActivityManagerActivitiesActivityChanged {
+        Ok(OrgKdeActivityManagerActivitiesCurrentActivityChanged {
             activity: i.read()?,
         })
     }
 }
 
-impl dbus::message::SignalArgs for OrgKdeActivityManagerActivitiesActivityChanged {
-    const NAME: &'static str = "ActivityChanged";
+impl dbus::message::SignalArgs for OrgKdeActivityManagerActivitiesCurrentActivityChanged {
+    const NAME: &'static str = "CurrentActivityChanged";
     const INTERFACE: &'static str = "org.kde.ActivityManager.Activities";
 }
 
 #[derive(Debug)]
 pub struct ActivityInfo {
-    name: String,
-    description: String,
-    icon: String,
+    pub name: String,
+    pub description: String,
 }
 
-pub struct KActivitiesConnection {
+pub struct KActivitiesListener {
     conn: Connection,
 }
-impl KActivitiesConnection {
+impl KActivitiesListener {
     pub fn new() -> Result<Self> {
         let conn = Connection::new_session().context("failed to connect to d-bus session bus")?;
         Ok(Self { conn })
@@ -57,7 +52,7 @@ impl KActivitiesConnection {
         self.conn
             .with_proxy(BUS_NAME, PATH, Duration::from_secs(1))
             .match_signal(Box::new(
-                move |message: OrgKdeActivityManagerActivitiesActivityChanged,
+                move |message: OrgKdeActivityManagerActivitiesCurrentActivityChanged,
                       _: &Connection,
                       _: &Message| {
                     sender
@@ -70,6 +65,24 @@ impl KActivitiesConnection {
             .map(|_| ())
             .context("failed to match signal")?;
         Ok(())
+    }
+
+    pub fn daemon(self) -> Result<()> {
+        loop {
+            self.conn
+                .process(Duration::from_secs(60))
+                .context("failed to process incoming d-bus messages")?;
+        }
+    }
+}
+
+pub struct KActivitiesConnection {
+    conn: Connection,
+}
+impl KActivitiesConnection {
+    pub fn new() -> Result<Self> {
+        let conn = Connection::new_session().context("failed to connect to d-bus session bus")?;
+        Ok(Self { conn })
     }
 
     pub fn query_current_activity(&self) -> Result<String> {
@@ -93,14 +106,9 @@ impl KActivitiesConnection {
             .method_call(INTERFACE, "ActivityDescription", (activity,))
             .context("failed to get activity description")?;
 
-        let (icon,): (String,) = proxy
-            .method_call(INTERFACE, "ActivityIcon", (activity,))
-            .context("failed to get activity icon")?;
-
         Ok(ActivityInfo {
             name,
             description,
-            icon,
         })
     }
 }

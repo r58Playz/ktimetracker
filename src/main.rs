@@ -4,6 +4,7 @@ use log::LevelFilter;
 mod daemon;
 mod wayland;
 mod kactivities;
+mod systemd;
 
 #[derive(Debug, Parser)]
 /// KDE Activities and Wayland idle protocol based time tracking tool
@@ -12,7 +13,8 @@ enum Cli {
     Daemon {},
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::builder()
         .filter_level(LevelFilter::Trace)
         .parse_default_env()
@@ -23,7 +25,7 @@ fn main() -> anyhow::Result<()> {
 	match args {
 		Cli::Daemon {  } => {
             let daemon = daemon::Daemon::new(5000);
-            daemon.run()?;
+            daemon.run().await?;
 			Ok(())
 		}
 	}

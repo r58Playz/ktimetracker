@@ -1,8 +1,9 @@
-use std::{ffi::CString, sync::mpsc::Sender};
+use std::ffi::CString;
+use tokio::sync::mpsc::UnboundedSender;
 
 use anyhow::{Context, Result};
 use log::info;
-use wayrs_client::{Connection, IoMode, protocol::WlSeat};
+use wayrs_client::{Connection, protocol::WlSeat};
 use wayrs_protocols::ext_idle_notify_v1::{ExtIdleNotifierV1, ext_idle_notification_v1::Event};
 use wayrs_utils::seats::{SeatHandler, Seats};
 
@@ -11,10 +12,10 @@ use crate::daemon::DaemonEvent;
 pub struct WaylandConnection {
     seats: Seats,
     seat_names: Vec<(CString, WlSeat)>,
-    sender: Sender<DaemonEvent>,
+    sender: UnboundedSender<DaemonEvent>,
 }
 impl WaylandConnection {
-    pub fn daemon(sender: Sender<DaemonEvent>, idle_timeout: u32) -> Result<()> {
+    pub async fn daemon(sender: UnboundedSender<DaemonEvent>, idle_timeout: u32) -> Result<()> {
         let mut conn = Connection::connect().context("failed to connect to wayland server")?;
         let mut this = Self {
             seat_names: Vec::new(),
@@ -23,11 +24,17 @@ impl WaylandConnection {
         };
 
         // receive seats
-        conn.blocking_roundtrip().context("roundtrip failed")?;
+        conn.async_flush()
+            .await
+            .context("failed to flush wayland connection")?;
+        conn.async_roundtrip().await.context("roundtrip failed")?;
         conn.dispatch_events(&mut this);
 
         // receive seat names
-        conn.blocking_roundtrip().context("roundtrip failed")?;
+        conn.async_flush()
+            .await
+            .context("failed to flush wayland connection")?;
+        conn.async_roundtrip().await.context("roundtrip failed")?;
         conn.dispatch_events(&mut this);
 
         let idle = conn
@@ -41,11 +48,15 @@ impl WaylandConnection {
             ctx.state.idle_event(ctx.event);
         });
 
-		loop {
-			conn.flush(IoMode::Blocking).context("failed to flush wayland connection")?;
-			conn.recv_events(IoMode::Blocking).context("failed to recv wayland events")?;
-			conn.dispatch_events(&mut this);
-		}
+        loop {
+            conn.async_flush()
+                .await
+                .context("failed to flush wayland connection")?;
+            conn.async_recv_events()
+                .await
+                .context("failed to recv wayland events")?;
+            conn.dispatch_events(&mut this);
+        }
     }
 
     fn idle_event(&mut self, event: Event) {

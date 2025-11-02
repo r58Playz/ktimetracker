@@ -1,10 +1,13 @@
 use tokio::sync::mpsc;
 
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{debug, error, info, trace};
+use std::sync::Arc;
+use tokio::signal;
 
 use crate::{
-    kactivities::KActivitiesConnection, systemd::SystemdConnection, wayland::WaylandConnection,
+    db::Database, kactivities::KActivitiesConnection, systemd::SystemdConnection,
+    wayland::WaylandConnection,
 };
 
 pub enum DaemonEvent {
@@ -30,51 +33,86 @@ impl Daemon {
         }
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self, database_path: &str) -> Result<()> {
         info!("starting daemon");
 
+        let db = Arc::new(Database::new(database_path).await?);
         let kactivities_conn = KActivitiesConnection::new(self.event_tx.clone()).await?;
 
-        tokio::spawn({
-            let wayland_tx = self.event_tx.clone();
+        let mut signal_handle = tokio::spawn({
+            let db_clone = db.clone();
             async move {
-                if let Err(e) = WaylandConnection::daemon(wayland_tx, self.idle_duration).await {
-                    error!("wayland listener failed: {e}");
-                }
+                let mut sigterm =
+                    signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+                let mut sigint =
+                    signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+                tokio::select! {
+                    _ = sigterm.recv() => {},
+                    _ = sigint.recv() => {},
+                };
+                trace!("got signal, saving state");
+                db_clone.end_current_activity().await
             }
         });
 
-        tokio::spawn({
-            let systemd_conn = SystemdConnection::new(self.event_tx.clone()).await?;
-            async move {
-                if let Err(e) = systemd_conn.daemon().await {
-                    error!("systemd connection failed: {e}");
-                }
-            }
-        });
+        let initial_activity = kactivities_conn.query_current_activity().await?;
+        db.switch_activity(&initial_activity).await?;
+        trace!("kde activity changed to {initial_activity}");
+
+        let mut wayland_handle = tokio::spawn(WaylandConnection::daemon(
+            self.event_tx.clone(),
+            self.idle_duration,
+        ));
+
+        let mut systemd_handle = tokio::spawn(
+            SystemdConnection::new(self.event_tx.clone())
+                .await?
+                .daemon(),
+        );
 
         loop {
-            match self.event_rx.recv().await {
-                Some(DaemonEvent::KdeActivityChanged { activity }) => {
-                    let activity_info = kactivities_conn
-                        .query_activity_info(activity.clone())
-                        .await?;
-                    debug!(
-                        "kde activity changed to {activity} ({})",
-                        activity_info.name
-                    );
-                }
-                Some(DaemonEvent::IdleStatusChanged { idle }) => {
-                    debug!("idle status changed: {idle}");
-                }
-                Some(DaemonEvent::SleepingNow) => {
-                    debug!("sleeping now");
-                }
-                Some(DaemonEvent::WakingNow) => {
-                    debug!("waking now");
-                }
-                None => {
+            tokio::select! {
+                res = &mut signal_handle => {
+                    debug!("terminating due to signal, save result {res:?}");
                     break;
+                },
+                res = &mut wayland_handle => {
+                    error!("wayland task exited with: {res:?}");
+                    break;
+                },
+                res = &mut systemd_handle => {
+                    error!("systemd task exited with: {res:?}");
+                    break;
+                },
+                event = self.event_rx.recv() => {
+                    match event {
+                        Some(DaemonEvent::KdeActivityChanged { activity }) => {
+                            trace!("activity changed to {activity}");
+                            db.switch_activity(&activity).await?;
+                        }
+                        Some(DaemonEvent::IdleStatusChanged { idle }) => {
+                            if idle {
+                                trace!("ending current activity: now idle");
+                                db.end_current_activity().await?;
+                            } else {
+                                let activity = kactivities_conn.query_current_activity().await?;
+                                trace!("starting activity {activity}: no longer idle");
+                                db.switch_activity(&activity).await?;
+                            }
+                        }
+                        Some(DaemonEvent::SleepingNow) => {
+                            trace!("ending current activity: now going to sleep");
+                            db.end_current_activity().await?;
+                        }
+                        Some(DaemonEvent::WakingNow) => {
+                            let activity = kactivities_conn.query_current_activity().await?;
+                            trace!("stating activity {activity}: no longer asleep");
+                            db.switch_activity(&activity).await?;
+                        }
+                        None => {
+                            break;
+                        }
+                    }
                 }
             }
         }

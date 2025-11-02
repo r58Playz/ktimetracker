@@ -38,7 +38,8 @@ enum Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
 	env_logger::builder()
-		.filter_level(LevelFilter::Trace)
+		.filter_level(LevelFilter::Off)
+		.filter_module("ktimetracker", LevelFilter::Trace)
 		.parse_default_env()
 		.init();
 
@@ -54,12 +55,13 @@ async fn main() -> anyhow::Result<()> {
 			Ok(())
 		}
 		Cli::Action(action) => {
-			let mut stream = UnixStream::connect("\0dev.r58playz.ktimetracker").await?;
+			let (mut rx, mut tx) = UnixStream::connect("\0dev.r58playz.ktimetracker").await?.into_split();
 			let action_str = serde_json::to_string(&action)?;
-			stream.write_all(action_str.as_bytes()).await?;
+			tx.write_all(action_str.as_bytes()).await?;
+			tx.shutdown().await?;
 
 			let mut stdout = tokio::io::stdout();
-			tokio::io::copy(&mut stream, &mut stdout).await?;
+			tokio::io::copy(&mut rx, &mut stdout).await?;
 
 			Ok(())
 		}

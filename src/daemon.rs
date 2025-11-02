@@ -5,7 +5,7 @@ use tokio::{
 };
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 use log::{debug, error, info, trace};
 use std::sync::Arc;
 use tokio::{signal, task::JoinHandle};
@@ -90,6 +90,8 @@ async fn handle_unix_client(
 			start_time,
 			end_time,
 		} => {
+			trace!("handling summary command");
+
 			let start = start_time
 				.map(|s| parse_datetime(s))
 				.transpose()
@@ -99,7 +101,10 @@ async fn handle_unix_client(
 				.transpose()
 				.context("Failed to parse end_time")?;
 
-			let summary = db.get_summary(start, end).await?;
+			let mut summary: Vec<(String, Duration)> = db.get_summary(start, end).await?.into_iter().collect();
+            summary.sort_by_key(|x| x.1);
+            summary.reverse();
+			trace!("got summary");
 
 			let mut max_activity_len = "Activity".len();
 			let mut max_duration_len = "Duration".len();
@@ -116,6 +121,7 @@ async fn handle_unix_client(
 				};
 				resolved_summary.push((activity_name, format_duration(duration)));
 			}
+			trace!("resolved summary");
 
 			for (activity, duration) in &resolved_summary {
 				max_activity_len = max_activity_len.max(activity.len());
@@ -144,8 +150,10 @@ async fn handle_unix_client(
 			swrite!(stream, separator)?;
 		}
 		Action::Current => {
+			trace!("handling current command");
 			let current_uuid = db.get_current_activity().await?;
 			let elapsed_time = db.get_current_activity_elapsed_time().await?;
+			trace!("got activity from db");
 
 			let activity_info = kactivities_conn
 				.query_activity_info(current_uuid.clone())
@@ -155,6 +163,7 @@ async fn handle_unix_client(
 			} else {
 				(activity_info.name, activity_info.description)
 			};
+			trace!("got kde activity info from db");
 
 			swrite!(
 				stream,
@@ -286,6 +295,7 @@ impl Daemon {
 			}
 		}
 
+		db.close().await;
 		Ok(())
 	}
 }

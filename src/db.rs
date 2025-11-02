@@ -1,9 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, Utc};
-use sqlx::{
-	FromRow,
-	sqlite::{SqlitePool, SqlitePoolOptions},
-};
+use log::info;
+use sqlx::{FromRow, Sqlite, migrate::MigrateDatabase, sqlite::SqlitePool};
 use std::collections::HashMap;
 
 pub struct Database {
@@ -21,10 +19,11 @@ struct Activity {
 
 impl Database {
 	pub async fn new(database_url: &str) -> Result<Self> {
-		let pool = SqlitePoolOptions::new()
-			.max_connections(5)
-			.connect(database_url)
-			.await?;
+		info!("opening database at {database_url}");
+		if !Sqlite::database_exists(&database_url).await? {
+			Sqlite::create_database(&database_url).await?;
+		}
+		let pool = SqlitePool::connect(database_url).await?;
 
 		let db = Database { pool };
 		db.setup().await?;
@@ -122,7 +121,6 @@ impl Database {
 		}
 	}
 
-
 	pub async fn get_summary(
 		&self,
 		start_time: Option<DateTime<Local>>,
@@ -132,7 +130,7 @@ impl Database {
 
 		let start_time_utc = start_time
 			.map(|dt| dt.with_timezone(&Utc))
-			.unwrap_or_else(Utc::now);
+			.unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap().with_timezone(&Utc));
 		let end_time_utc = end_time
 			.map(|dt| dt.with_timezone(&Utc))
 			.unwrap_or_else(Utc::now);
@@ -170,5 +168,8 @@ impl Database {
 
 		Ok(time_spent)
 	}
-}
 
+	pub async fn close(&self) {
+		self.pool.close().await;
+	}
+}

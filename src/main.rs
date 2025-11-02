@@ -1,8 +1,9 @@
 use clap::Parser;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
-use std::os::{linux::net::SocketAddrExt, unix::net::SocketAddr};
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, net::UnixStream};
+
+use crate::daemon::Daemon;
 
 mod daemon;
 mod db;
@@ -48,15 +49,12 @@ async fn main() -> anyhow::Result<()> {
 			database_path,
 			idle_timeout,
 		} => {
-			let daemon = daemon::Daemon::new(idle_timeout);
+			let daemon = Daemon::new(idle_timeout);
 			daemon.run(&database_path).await?;
 			Ok(())
 		}
 		Cli::Action(action) => {
-			let mut stream = tokio::net::UnixStream::connect(&SocketAddr::from_abstract_name(
-				"dev.r58playz.ktimetracker",
-			)?)
-			.await?;
+			let mut stream = UnixStream::connect("\0dev.r58playz.ktimetracker").await?;
 			let action_str = serde_json::to_string(&action)?;
 			stream.write_all(action_str.as_bytes()).await?;
 

@@ -97,11 +97,37 @@ impl Database {
 			.unwrap_or_else(|| "No current activity".to_string()))
 	}
 
+	pub async fn get_current_activity_elapsed_time(&self) -> Result<Option<Duration>> {
+		let activity: Option<Activity> = sqlx::query_as(
+			r#"
+            SELECT id, name, start_time, end_time
+            FROM activities
+            WHERE end_time IS NULL
+            ORDER BY start_time DESC
+            LIMIT 1;
+            "#,
+		)
+		.fetch_optional(&self.pool)
+		.await?;
+
+		match activity {
+			Some(act) => {
+				let start_time = DateTime::from_timestamp(act.start_time, 0)
+					.unwrap()
+					.with_timezone(&Utc);
+				let now = Utc::now();
+				Ok(Some(now - start_time))
+			}
+			None => Ok(None),
+		}
+	}
+
+
 	pub async fn get_summary(
 		&self,
 		start_time: Option<DateTime<Local>>,
 		end_time: Option<DateTime<Local>>,
-	) -> Result<HashMap<String, String>> {
+	) -> Result<HashMap<String, Duration>> {
 		let mut time_spent: HashMap<String, Duration> = HashMap::new();
 
 		let start_time_utc = start_time
@@ -142,29 +168,7 @@ impl Database {
 			}
 		}
 
-		Ok(time_spent
-			.into_iter()
-			.map(|(k, v)| (k, format_duration(v)))
-			.collect())
+		Ok(time_spent)
 	}
 }
 
-fn format_duration(duration: Duration) -> String {
-	let mut parts = Vec::new();
-	let hours = duration.num_hours();
-	if hours > 0 {
-		parts.push(format!("{}h", hours));
-	}
-	let minutes = duration.num_minutes() % 60;
-	if minutes > 0 {
-		parts.push(format!("{}m", minutes));
-	}
-	let seconds = duration.num_seconds() % 60;
-	if seconds > 0 {
-		parts.push(format!("{}s", seconds));
-	}
-	if parts.is_empty() {
-		return "0s".to_string();
-	}
-	parts.join(" ")
-}

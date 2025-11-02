@@ -7,10 +7,7 @@ use tokio::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use log::{debug, error, info, trace};
-use std::{
-	os::{linux::net::SocketAddrExt, unix::net::SocketAddr},
-	sync::Arc,
-};
+use std::sync::Arc;
 use tokio::{signal, task::JoinHandle};
 
 use crate::{
@@ -18,6 +15,26 @@ use crate::{
 	wayland::WaylandConnection,
 };
 use serde_json;
+
+fn format_duration(duration: chrono::Duration) -> String {
+	let mut parts = Vec::new();
+	let hours = duration.num_hours();
+	if hours > 0 {
+		parts.push(format!("{}h", hours));
+	}
+	let minutes = duration.num_minutes() % 60;
+	if minutes > 0 {
+		parts.push(format!("{}m", minutes));
+	}
+	let seconds = duration.num_seconds() % 60;
+	if seconds > 0 {
+		parts.push(format!("{}s", seconds));
+	}
+	if parts.is_empty() {
+		return "0s".to_string();
+	}
+	parts.join(" ")
+}
 
 pub enum DaemonEvent {
 	KdeActivityChanged { activity: String },
@@ -30,6 +47,15 @@ pub struct Daemon {
 	event_tx: mpsc::UnboundedSender<DaemonEvent>,
 	event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
 	idle_duration: u32,
+}
+
+macro_rules! swrite {
+	($stream:expr, $arg:ident) => {
+		$stream.write_all($arg.as_bytes()).await
+	};
+	($stream:expr, $($arg:tt)*) => {
+		$stream.write_all(format!($($arg)*).as_bytes()).await
+	};
 }
 
 fn parse_datetime(s: String) -> anyhow::Result<DateTime<Local>> {
@@ -88,7 +114,7 @@ async fn handle_unix_client(
 				} else {
 					activity_info.name
 				};
-				resolved_summary.push((activity_name, duration));
+				resolved_summary.push((activity_name, format_duration(duration)));
 			}
 
 			for (activity, duration) in &resolved_summary {
@@ -98,33 +124,29 @@ async fn handle_unix_client(
 
 			let separator = format!("{:->max_activity_len$}-+{:->max_duration_len$}\n", "", "");
 
-			stream.write_all(separator.as_bytes()).await?;
-			stream
-				.write_all(
-					format!(
-						"{:<max_activity_len$} | {:<max_duration_len$}\n",
-						"Activity", "Duration"
-					)
-					.as_bytes(),
-				)
-				.await?;
-			stream.write_all(separator.as_bytes()).await?;
+			swrite!(stream, separator)?;
+			swrite!(
+				stream,
+				"{:<max_activity_len$} | {:<max_duration_len$}\n",
+				"Activity",
+				"Duration"
+			)?;
+			swrite!(stream, separator)?;
 
 			for (activity, duration) in resolved_summary {
-				stream
-					.write_all(
-						format!(
-							"{:<max_activity_len$} | {:<max_duration_len$}\n",
-							activity, duration
-						)
-						.as_bytes(),
-					)
-					.await?;
+				swrite!(
+					stream,
+					"{:<max_activity_len$} | {:<max_duration_len$}\n",
+					activity,
+					duration
+				)?;
 			}
-			stream.write_all(separator.as_bytes()).await?;
+			swrite!(stream, separator)?;
 		}
 		Action::Current => {
 			let current_uuid = db.get_current_activity().await?;
+			let elapsed_time = db.get_current_activity_elapsed_time().await?;
+
 			let activity_info = kactivities_conn
 				.query_activity_info(current_uuid.clone())
 				.await?;
@@ -133,12 +155,14 @@ async fn handle_unix_client(
 			} else {
 				(activity_info.name, activity_info.description)
 			};
-			stream
-				.write_all(
-					format!("Current Activity: {}\nDescription: {}\n", name, description)
-						.as_bytes(),
-				)
-				.await?;
+
+			swrite!(
+				stream,
+				"Current Activity: {}\nDescription: {}\nElapsed Time: {}\n",
+				name,
+				description,
+				elapsed_time.map_or("N/A".to_string(), format_duration)
+			)?;
 		}
 	}
 	Ok(())
@@ -191,9 +215,7 @@ impl Daemon {
 				.daemon(),
 		);
 
-		let listener = UnixListener::bind(&SocketAddr::from_abstract_name(
-			"dev.r58playz.ktimetracker",
-		)?)?;
+		let listener = UnixListener::bind("\0dev.r58playz.ktimetracker")?;
 		let mut unix_socket_handle: JoinHandle<Result<()>> = tokio::spawn({
 			let db = db.clone();
 			let kactivities_conn = kactivities_conn.clone();

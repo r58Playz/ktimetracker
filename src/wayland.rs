@@ -10,77 +10,77 @@ use wayrs_utils::seats::{SeatHandler, Seats};
 use crate::daemon::DaemonEvent;
 
 pub struct WaylandConnection {
-    seats: Seats,
-    seat_names: Vec<(CString, WlSeat)>,
-    sender: UnboundedSender<DaemonEvent>,
+	seats: Seats,
+	seat_names: Vec<(CString, WlSeat)>,
+	sender: UnboundedSender<DaemonEvent>,
 }
 impl WaylandConnection {
-    pub async fn daemon(sender: UnboundedSender<DaemonEvent>, idle_timeout: u32) -> Result<()> {
-        let mut conn = Connection::connect().context("failed to connect to wayland server")?;
-        let mut this = Self {
-            seat_names: Vec::new(),
-            seats: Seats::new(&mut conn),
-            sender,
-        };
+	pub async fn daemon(sender: UnboundedSender<DaemonEvent>, idle_timeout: u32) -> Result<()> {
+		let mut conn = Connection::connect().context("failed to connect to wayland server")?;
+		let mut this = Self {
+			seat_names: Vec::new(),
+			seats: Seats::new(&mut conn),
+			sender,
+		};
 
-        // receive seats
-        conn.async_flush()
-            .await
-            .context("failed to flush wayland connection")?;
-        conn.async_roundtrip().await.context("roundtrip failed")?;
-        conn.dispatch_events(&mut this);
+		// receive seats
+		conn.async_flush()
+			.await
+			.context("failed to flush wayland connection")?;
+		conn.async_roundtrip().await.context("roundtrip failed")?;
+		conn.dispatch_events(&mut this);
 
-        // receive seat names
-        conn.async_flush()
-            .await
-            .context("failed to flush wayland connection")?;
-        conn.async_roundtrip().await.context("roundtrip failed")?;
-        conn.dispatch_events(&mut this);
+		// receive seat names
+		conn.async_flush()
+			.await
+			.context("failed to flush wayland connection")?;
+		conn.async_roundtrip().await.context("roundtrip failed")?;
+		conn.dispatch_events(&mut this);
 
-        let idle = conn
-            .bind_singleton::<ExtIdleNotifierV1>(2..=2)
-            .context("failed to bind to ext_idle_notify_v1 version 2")?;
+		let idle = conn
+			.bind_singleton::<ExtIdleNotifierV1>(2..=2)
+			.context("failed to bind to ext_idle_notify_v1 version 2")?;
 
-        let (seat_name, seat) = this.seat_names.first().context("no wayland seats found")?;
+		let (seat_name, seat) = this.seat_names.first().context("no wayland seats found")?;
 
-        info!("chose wayland seat {seat_name:?} for idle notifications");
-        idle.get_input_idle_notification_with_cb(&mut conn, idle_timeout, *seat, |ctx| {
-            ctx.state.idle_event(ctx.event);
-        });
+		info!("chose wayland seat {seat_name:?} for idle notifications");
+		idle.get_input_idle_notification_with_cb(&mut conn, idle_timeout, *seat, |ctx| {
+			ctx.state.idle_event(ctx.event);
+		});
 
-        loop {
-            conn.async_flush()
-                .await
-                .context("failed to flush wayland connection")?;
-            conn.async_recv_events()
-                .await
-                .context("failed to recv wayland events")?;
-            conn.dispatch_events(&mut this);
-        }
-    }
+		loop {
+			conn.async_flush()
+				.await
+				.context("failed to flush wayland connection")?;
+			conn.async_recv_events()
+				.await
+				.context("failed to recv wayland events")?;
+			conn.dispatch_events(&mut this);
+		}
+	}
 
-    fn idle_event(&mut self, event: Event) {
-        match event {
-            Event::Idled => {
-                let _ = self
-                    .sender
-                    .send(DaemonEvent::IdleStatusChanged { idle: true });
-            }
-            Event::Resumed => {
-                let _ = self
-                    .sender
-                    .send(DaemonEvent::IdleStatusChanged { idle: false });
-            }
-            _ => {}
-        }
-    }
+	fn idle_event(&mut self, event: Event) {
+		match event {
+			Event::Idled => {
+				let _ = self
+					.sender
+					.send(DaemonEvent::IdleStatusChanged { idle: true });
+			}
+			Event::Resumed => {
+				let _ = self
+					.sender
+					.send(DaemonEvent::IdleStatusChanged { idle: false });
+			}
+			_ => {}
+		}
+	}
 }
 
 impl SeatHandler for WaylandConnection {
-    fn get_seats(&mut self) -> &mut Seats {
-        &mut self.seats
-    }
-    fn seat_name(&mut self, _: &mut Connection<Self>, seat: WlSeat, name: std::ffi::CString) {
-        self.seat_names.push((name, seat));
-    }
+	fn get_seats(&mut self) -> &mut Seats {
+		&mut self.seats
+	}
+	fn seat_name(&mut self, _: &mut Connection<Self>, seat: WlSeat, name: std::ffi::CString) {
+		self.seat_names.push((name, seat));
+	}
 }

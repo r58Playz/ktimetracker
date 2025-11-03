@@ -12,10 +12,24 @@ mod systemd;
 mod wayland;
 
 #[derive(Parser, Debug, Serialize, Deserialize)]
+pub enum SummaryPeriod {
+	/// Show summary for today
+	Today,
+	/// Show summary for this week
+	ThisWeek,
+	/// Show summary for this month
+	ThisMonth,
+}
+
+#[derive(Parser, Debug, Serialize, Deserialize)]
 pub enum Action {
 	/// Print summary of time spent
 	Summary {
+		#[command(subcommand)]
+		period: Option<SummaryPeriod>,
+		#[arg(long)]
 		start_time: Option<String>,
+		#[arg(long)]
 		end_time: Option<String>,
 	},
 	/// Print current session

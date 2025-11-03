@@ -5,14 +5,14 @@ use tokio::{
 };
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 use log::{debug, error, info, trace};
 use std::sync::Arc;
 use tokio::{signal, task::JoinHandle};
 
 use crate::{
-	Action, db::Database, kactivities::KActivitiesConnection, systemd::SystemdConnection,
-	wayland::WaylandConnection,
+	Action, SummaryPeriod, db::Database, kactivities::KActivitiesConnection,
+	systemd::SystemdConnection, wayland::WaylandConnection,
 };
 use serde_json;
 
@@ -87,19 +87,46 @@ async fn handle_unix_client(
 
 	match action {
 		Action::Summary {
+			period,
 			start_time,
 			end_time,
 		} => {
 			trace!("handling summary command");
 
-			let start = start_time
-				.map(|s| parse_datetime(s))
-				.transpose()
-				.context("Failed to parse start_time")?;
-			let end = end_time
-				.map(|s| parse_datetime(s))
-				.transpose()
-				.context("Failed to parse end_time")?;
+			let (start, end) = match period {
+				Some(SummaryPeriod::Today) => {
+					let now = Local::now();
+					let start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
+					(Some(Local.from_local_datetime(&start).unwrap()), None)
+				}
+				Some(SummaryPeriod::ThisWeek) => {
+					let now = Local::now();
+					let weekday = now.weekday().num_days_from_monday();
+					let start = (now.date_naive() - chrono::Days::new(weekday as u64))
+						.and_hms_opt(0, 0, 0)
+						.unwrap();
+					(Some(Local.from_local_datetime(&start).unwrap()), None)
+				}
+				Some(SummaryPeriod::ThisMonth) => {
+					let now = Local::now();
+					let start = NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
+						.unwrap()
+						.and_hms_opt(0, 0, 0)
+						.unwrap();
+					(Some(Local.from_local_datetime(&start).unwrap()), None)
+				}
+				None => {
+					let start = start_time
+						.map(|s| parse_datetime(s))
+						.transpose()
+						.context("Failed to parse start_time")?;
+					let end = end_time
+						.map(|s| parse_datetime(s))
+						.transpose()
+						.context("Failed to parse end_time")?;
+					(start, end)
+				}
+			};
 
 			let mut summary: Vec<(String, Duration)> =
 				db.get_summary(start, end).await?.into_iter().collect();

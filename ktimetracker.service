@@ -1,0 +1,10 @@
+[Unit]
+Description=Track KDE activities time
+After=plasma-workspace.target
+
+[Service]
+ExecStart=%h/.cargo/bin/ktimetracker daemon %h/.local/share/ktimetracker.db
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

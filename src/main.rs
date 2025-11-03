@@ -28,7 +28,6 @@ enum Cli {
 	Action(Action),
 	/// Run daemon
 	Daemon {
-		#[arg(long, default_value = "~/.local/share/ktimetracker.db3")]
 		database_path: String,
 		#[arg(long, default_value_t = 5000)]
 		idle_timeout: u32,

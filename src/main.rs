@@ -39,7 +39,7 @@ enum Cli {
 async fn main() -> anyhow::Result<()> {
 	env_logger::builder()
 		.filter_level(LevelFilter::Off)
-		.filter_module("ktimetracker", LevelFilter::Trace)
+		.filter_module("ktimetracker", LevelFilter::Debug)
 		.parse_default_env()
 		.init();
 
@@ -55,7 +55,9 @@ async fn main() -> anyhow::Result<()> {
 			Ok(())
 		}
 		Cli::Action(action) => {
-			let (mut rx, mut tx) = UnixStream::connect("\0dev.r58playz.ktimetracker").await?.into_split();
+			let (mut rx, mut tx) = UnixStream::connect("\0dev.r58playz.ktimetracker")
+				.await?
+				.into_split();
 			let action_str = serde_json::to_string(&action)?;
 			tx.write_all(action_str.as_bytes()).await?;
 			tx.shutdown().await?;

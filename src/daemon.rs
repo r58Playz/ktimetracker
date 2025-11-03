@@ -101,9 +101,10 @@ async fn handle_unix_client(
 				.transpose()
 				.context("Failed to parse end_time")?;
 
-			let mut summary: Vec<(String, Duration)> = db.get_summary(start, end).await?.into_iter().collect();
-            summary.sort_by_key(|x| x.1);
-            summary.reverse();
+			let mut summary: Vec<(String, Duration)> =
+				db.get_summary(start, end).await?.into_iter().collect();
+			summary.sort_by_key(|x| x.1);
+			summary.reverse();
 			trace!("got summary");
 
 			let mut max_activity_len = "Activity".len();
@@ -196,10 +197,8 @@ impl Daemon {
 		let mut signal_handle = tokio::spawn({
 			let db_clone = db.clone();
 			async move {
-				let mut sigterm =
-					signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
-				let mut sigint =
-					signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+				let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+				let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
 				tokio::select! {
 					_ = sigterm.recv() => {},
 					_ = sigint.recv() => {},

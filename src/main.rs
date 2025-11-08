@@ -43,7 +43,7 @@ enum Cli {
 	/// Run daemon
 	Daemon {
 		database_path: String,
-		#[arg(long, default_value_t = 5000)]
+		#[arg(long, default_value_t = 120000)]
 		idle_timeout: u32,
 	},
 }

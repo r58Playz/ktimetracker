@@ -44,7 +44,7 @@ impl WaylandConnection {
 		let (seat_name, seat) = this.seat_names.first().context("no wayland seats found")?;
 
 		info!("chose wayland seat {seat_name:?} for idle notifications");
-		idle.get_input_idle_notification_with_cb(&mut conn, idle_timeout, *seat, |ctx| {
+		idle.get_idle_notification_with_cb(&mut conn, idle_timeout, *seat, |ctx| {
 			ctx.state.idle_event(ctx.event);
 		});
 
